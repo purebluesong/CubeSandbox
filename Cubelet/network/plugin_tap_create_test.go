@@ -724,22 +724,38 @@ func TestMergeDNSAllowOutCIDRsForAllowOutDomain(t *testing.T) {
 	}
 }
 
-func TestMergeDNSAllowOutCIDRsSkipsWithoutDomainAllow(t *testing.T) {
+func TestMergeDNSAllowOutCIDRsForIPOnlyPolicy(t *testing.T) {
 	block := false
 	cfg := &networkruntime.CubeNetworkConfig{
 		AllowInternetAccess: &block,
 		DenyOut:             []string{"0.0.0.0/0"},
 	}
 
-	got, dnsCIDRs := mergeDNSAllowOutCIDRs(context.Background(), cfg, []string{"1.1.1.1"})
-	if got != cfg {
-		t.Fatal("expected original config to be reused when no domain is allowed")
+	got, dnsCIDRs := mergeDNSAllowOutCIDRs(context.Background(), cfg, []string{"10.204.0.10"})
+	if got == cfg {
+		t.Fatal("expected cloned config when resolver access is added")
 	}
-	if len(dnsCIDRs) != 0 {
-		t.Fatalf("dnsCIDRs=%v, want empty", dnsCIDRs)
+	if len(dnsCIDRs) != 1 || dnsCIDRs[0] != "10.204.0.10/32" {
+		t.Fatalf("dnsCIDRs=%v, want [10.204.0.10/32]", dnsCIDRs)
 	}
-	if len(got.AllowOut) != 0 {
-		t.Fatalf("AllowOut=%v, want empty", got.AllowOut)
+	if len(got.AllowOut) != 1 || got.AllowOut[0] != "10.204.0.10/32" {
+		t.Fatalf("AllowOut=%v, want [10.204.0.10/32]", got.AllowOut)
+	}
+}
+
+func TestMergeDNSAllowOutCIDRsForIPOnlyPolicyKeepsPublicResolverScoped(t *testing.T) {
+	block := false
+	cfg := &networkruntime.CubeNetworkConfig{AllowInternetAccess: &block}
+
+	got, dnsCIDRs := mergeDNSAllowOutCIDRs(context.Background(), cfg, []string{"10.204.0.10", "1.1.1.1"})
+	if got == cfg {
+		t.Fatal("expected cloned config when private resolver access is added")
+	}
+	if len(dnsCIDRs) != 2 {
+		t.Fatalf("dnsCIDRs=%v, want both configured resolvers recorded", dnsCIDRs)
+	}
+	if len(got.AllowOut) != 1 || got.AllowOut[0] != "10.204.0.10/32" {
+		t.Fatalf("AllowOut=%v, want only private resolver CIDR", got.AllowOut)
 	}
 }
 
@@ -792,16 +808,19 @@ func TestMergeDNSAllowOutCIDRsForL7WildcardRules(t *testing.T) {
 	}
 }
 
-func TestMergeDNSAllowOutCIDRsSkipsOpenInternetContext(t *testing.T) {
+func TestMergeDNSAllowOutCIDRsForOpenInternetContext(t *testing.T) {
 	allow := true
 	cfg := &networkruntime.CubeNetworkConfig{AllowInternetAccess: &allow}
 
 	got, dnsCIDRs := mergeDNSAllowOutCIDRs(context.Background(), cfg, []string{"1.1.1.1"})
 	if got != cfg {
-		t.Fatal("expected original config to be reused for open internet access")
+		t.Fatal("expected original config to be reused for public resolver without domain policy")
 	}
 	if len(dnsCIDRs) != 0 {
 		t.Fatalf("dnsCIDRs=%v, want empty", dnsCIDRs)
+	}
+	if len(got.AllowOut) != 0 {
+		t.Fatalf("AllowOut=%v, want empty", got.AllowOut)
 	}
 }
 

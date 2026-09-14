@@ -131,12 +131,19 @@ func formatCubeNetworkConfig(in *CubeNetworkConfig) string {
 // this the first update of a domain-based policy would revoke DNS itself and
 // black-hole every domain rule it just installed.
 //
-// Same condition as the create path: only a policy that still names a domain
-// keeps the resolver exception, so an update that drops every domain also drops
-// the implicit DNS access.
+// The same domain-policy condition is retained for public resolvers. Private,
+// link-local, and loopback resolvers keep the exception on every update because
+// CubeVS's invariant deny ranges would otherwise make the configured resolver
+// unreachable even when the user policy contains no domain target.
 func withDNSResolverAllowOut(cfg *CubeNetworkConfig, resolverCIDRs []string) *CubeNetworkConfig {
-	if cfg == nil || len(resolverCIDRs) == 0 || !needsDNSResolution(cfg) {
+	if len(resolverCIDRs) == 0 || (!needsDNSResolution(cfg) && !hasPrivateResolverCIDR(resolverCIDRs)) {
 		return cfg
+	}
+	if cfg == nil {
+		cfg = &CubeNetworkConfig{}
+	}
+	if !needsDNSResolution(cfg) {
+		resolverCIDRs = privateResolverCIDRs(resolverCIDRs)
 	}
 	for _, cidr := range resolverCIDRs {
 		if !slices.Contains(cfg.AllowOut, cidr) {
@@ -146,12 +153,39 @@ func withDNSResolverAllowOut(cfg *CubeNetworkConfig, resolverCIDRs []string) *Cu
 	return cfg
 }
 
+func privateResolverCIDRs(cidrs []string) []string {
+	private := make([]string, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		ip, _, err := net.ParseCIDR(strings.TrimSpace(cidr))
+		if err == nil && (ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback()) {
+			private = append(private, cidr)
+		}
+	}
+	return private
+}
+
+func hasPrivateResolverCIDR(cidrs []string) bool {
+	for _, cidr := range cidrs {
+		ip, _, err := net.ParseCIDR(strings.TrimSpace(cidr))
+		if err != nil {
+			continue
+		}
+		if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback() {
+			return true
+		}
+	}
+	return false
+}
+
 // needsDNSResolution reports whether any allow_out target or L7 rule host is a
 // domain. It asks the predicate that mirrors where cubevs actually installs a
 // target, so a bare IPv4 literal does not read as a domain -- a name-shape check
 // accepts "10.0.0.1" because digits are valid DNS label characters, and folding
 // the resolver in for an IP-only policy would grant access nobody asked for.
 func needsDNSResolution(cfg *CubeNetworkConfig) bool {
+	if cfg == nil {
+		return false
+	}
 	if slices.ContainsFunc(cfg.AllowOut, cubevs.IsAllowOutDomainTarget) {
 		return true
 	}

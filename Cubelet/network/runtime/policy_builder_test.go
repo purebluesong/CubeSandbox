@@ -66,6 +66,23 @@ func TestCubeVSTapRegistrationBlockAll(t *testing.T) {
 	}
 }
 
+func TestWithDNSResolverAllowOutKeepsPublicResolverScoped(t *testing.T) {
+	allowInternet := false
+	cfg := &CubeNetworkConfig{AllowInternetAccess: &allowInternet}
+
+	got := withDNSResolverAllowOut(cfg, []string{"10.204.0.10/32", "1.1.1.1/32"})
+	if got == nil || len(got.AllowOut) != 1 || got.AllowOut[0] != "10.204.0.10/32" {
+		t.Fatalf("AllowOut=%v, want only private resolver CIDR", got.AllowOut)
+	}
+}
+
+func TestWithDNSResolverAllowOutNilConfigPrivateResolver(t *testing.T) {
+	got := withDNSResolverAllowOut(nil, []string{"169.254.20.10/32"})
+	if got == nil || len(got.AllowOut) != 1 || got.AllowOut[0] != "169.254.20.10/32" {
+		t.Fatalf("got=%#v, want private resolver CIDR on a new config", got)
+	}
+}
+
 func TestCubeVSTapRegistrationExtractsL7AllowOut(t *testing.T) {
 	sni := "API.Example.COM."
 	sniWildcard := "*.SNI.Example.COM"

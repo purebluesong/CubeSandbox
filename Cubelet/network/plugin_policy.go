@@ -159,11 +159,13 @@ func formatNetworkRuntimeCubeNetworkConfig(cfg *networkruntime.CubeNetworkConfig
 	)
 }
 
-// mergeDNSAllowOutCIDRs appends resolver /32 CIDRs when a policy contains domain
-// targets. Without this compatibility step, a sandbox with AllowInternetAccess=false
-// could be allowed to reach a domain by policy but still fail DNS resolution.
+// mergeDNSAllowOutCIDRs appends resolver /32 CIDRs when a policy contains a
+// domain target, or when the resolver itself is in a private/link-local range
+// protected by CubeVS's default deny entries. The latter is required for
+// Kubernetes ClusterIP resolvers even when a sandbox policy has no domain
+// target yet; public resolvers remain governed by the caller's policy.
 func mergeDNSAllowOutCIDRs(ctx context.Context, cfg *networkruntime.CubeNetworkConfig, dnsServers []string) (*networkruntime.CubeNetworkConfig, []string) {
-	if !shouldAppendDNSAllowOut(cfg) || len(dnsServers) == 0 {
+	if len(dnsServers) == 0 || (!shouldAppendDNSAllowOut(cfg) && !hasPrivateDNSServer(dnsServers)) {
 		return cfg, nil
 	}
 	if ctx == nil {
@@ -174,12 +176,42 @@ func mergeDNSAllowOutCIDRs(ctx context.Context, cfg *networkruntime.CubeNetworkC
 		out = &networkruntime.CubeNetworkConfig{}
 	}
 	dnsAllowOutCIDRs := dnsServersToAllowOutCIDRs(ctx, dnsServers)
-	// CubeVS AllowOut entries are CIDR-only today and cannot express UDP/TCP port 53.
-	// These resolver CIDRs intentionally keep domain-based allow rules functional
-	// even when AllowInternetAccess=false; restricting them to DNS ports requires a
-	// network runtime/CubeVS policy-model extension.
-	out.AllowOut = appendUniqueString(out.AllowOut, dnsAllowOutCIDRs)
+	mergedCIDRs := dnsAllowOutCIDRs
+	if !shouldAppendDNSAllowOut(cfg) {
+		// Keep the original least-privilege behavior for public resolvers. A
+		// private resolver is an infrastructure dependency, so only those
+		// resolver CIDRs bypass CubeVS's default private-range deny.
+		mergedCIDRs = privateDNSServerCIDRs(ctx, dnsServers)
+	}
+	// The v0.6 policy map is CIDR-only and cannot express UDP/TCP port 53. Keep
+	// this exception limited to the configured resolver /32s; a future
+	// port-aware policy map can narrow it to DNS traffic only.
+	out.AllowOut = appendUniqueString(out.AllowOut, mergedCIDRs)
 	return out, dnsAllowOutCIDRs
+}
+
+func hasPrivateDNSServer(dnsServers []string) bool {
+	for _, server := range dnsServers {
+		if isPrivateDNSServer(server) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPrivateDNSServer(server string) bool {
+	ip := net.ParseIP(strings.TrimSpace(server))
+	return ip != nil && (ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback())
+}
+
+func privateDNSServerCIDRs(ctx context.Context, dnsServers []string) []string {
+	private := make([]string, 0, len(dnsServers))
+	for _, server := range dnsServers {
+		if isPrivateDNSServer(server) {
+			private = append(private, server)
+		}
+	}
+	return dnsServersToAllowOutCIDRs(ctx, private)
 }
 
 // dnsServersToAllowOutCIDRs converts resolved DNS server addresses into
